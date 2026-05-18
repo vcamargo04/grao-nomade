@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { QRCodeCanvas } from 'qrcode.react'
 
 import {
   addDoc,
   collection,
   doc,
+  getDoc,
   serverTimestamp,
   setDoc
 } from 'firebase/firestore'
@@ -37,8 +39,54 @@ export default function Checkout() {
   const [cidade, setCidade] = useState('')
   const [estado, setEstado] = useState('')
 
+  const [cpfBloqueado, setCpfBloqueado] = useState(false)
+
   const [mensagem, setMensagem] = useState('')
   const [erro, setErro] = useState('')
+
+  const [pedidoFinalizado, setPedidoFinalizado] = useState(false)
+  const [qrValue, setQrValue] = useState('')
+
+  useEffect(() => {
+    const carregarDadosUsuario = async () => {
+      const usuario = auth.currentUser
+
+      if (!usuario) return
+
+      try {
+        const ref = doc(db, 'usuarios', usuario.uid)
+        const snap = await getDoc(ref)
+
+        if (snap.exists()) {
+          const dados = snap.data()
+
+          setNome(dados.nomeCompleto || '')
+          setCpf(dados.cpf || '')
+          setEmail(dados.email || usuario.email || '')
+          setTelefone(dados.telefone || '')
+
+          setCep(dados.endereco?.cep || '')
+          setRua(dados.endereco?.rua || '')
+          setNumero(dados.endereco?.numero || '')
+          setComplemento(dados.endereco?.complemento || '')
+          setBairro(dados.endereco?.bairro || '')
+          setCidade(dados.endereco?.cidade || '')
+          setEstado(dados.endereco?.estado || '')
+
+          if (dados.cpf) {
+            setCpfBloqueado(true)
+          }
+        } else {
+          setEmail(usuario.email || '')
+          setNome(usuario.displayName || '')
+        }
+      } catch (error) {
+        console.log(error)
+      }
+    }
+
+    carregarDadosUsuario()
+  }, [])
 
   const finalizarPedido = async () => {
     setMensagem('')
@@ -72,13 +120,13 @@ export default function Checkout() {
         estado
       }
 
-      await addDoc(collection(db, 'usuarios', usuario.uid, 'pedidos'), {
+      const pedidoRef = await addDoc(collection(db, 'usuarios', usuario.uid, 'pedidos'), {
         planoId: plano.planoId,
         planoNome: plano.planoNome,
         planoPreco: plano.planoPreco,
         planoDescricao: plano.planoDescricao,
         metodoPagamento: metodo,
-        status: 'Pagamento aprovado',
+        status: metodo === 'pix' ? 'Aguardando PIX demonstrativo' : 'Pagamento aprovado',
         nome,
         cpf,
         email,
@@ -102,11 +150,22 @@ export default function Checkout() {
         { merge: true }
       )
 
-      setMensagem('Assinatura finalizada com sucesso! Redirecionando para sua conta...')
+      setPedidoFinalizado(true)
+
+      if (metodo === 'pix') {
+        setQrValue(
+          `Obrigado por testar o projeto Grão Nômade!\n\nCompra demonstrativa finalizada com sucesso.\nPlano: ${plano.planoNome}\nValor: ${plano.planoPreco}\nPedido: ${pedidoRef.id.slice(0, 8).toUpperCase()}`
+        )
+
+        setMensagem('Pedido criado com sucesso! Escaneie o QR Code PIX demonstrativo abaixo.')
+        return
+      }
+
+      setMensagem(`Pedido finalizado com sucesso! Uma confirmação demonstrativa foi enviada para ${email}.`)
 
       setTimeout(() => {
         navigate('/conta')
-      }, 1600)
+      }, 2500)
 
     } catch (error) {
       console.log(error)
@@ -130,8 +189,11 @@ export default function Checkout() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <input type="text" placeholder="Nome completo" value={nome} onChange={(e) => setNome(e.target.value)} className="p-5 rounded-2xl border border-gray-300 dark:border-[#4b382d] bg-white dark:bg-[#181411] text-[#2d1f16] dark:text-white outline-none focus:ring-2 focus:ring-[#8b5e3c] transition" />
-              <input type="text" placeholder="CPF" value={cpf} onChange={(e) => setCpf(e.target.value)} className="p-5 rounded-2xl border border-gray-300 dark:border-[#4b382d] bg-white dark:bg-[#181411] text-[#2d1f16] dark:text-white outline-none focus:ring-2 focus:ring-[#8b5e3c] transition" />
-              <input type="email" placeholder="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} className="p-5 rounded-2xl border border-gray-300 dark:border-[#4b382d] bg-white dark:bg-[#181411] text-[#2d1f16] dark:text-white outline-none focus:ring-2 focus:ring-[#8b5e3c] transition" />
+
+              <input type="text" placeholder="CPF" value={cpf} onChange={(e) => setCpf(e.target.value)} readOnly={cpfBloqueado} className={`p-5 rounded-2xl border border-gray-300 dark:border-[#4b382d] dark:bg-[#181411] dark:text-white outline-none focus:ring-2 focus:ring-[#8b5e3c] transition ${cpfBloqueado ? 'bg-gray-100 text-gray-500 cursor-not-allowed dark:text-gray-400' : 'bg-white'}`} />
+
+              <input type="email" placeholder="E-mail" value={email} readOnly className="p-5 rounded-2xl border bg-gray-100 text-gray-500 dark:bg-[#181411] dark:border-[#4b382d] dark:text-gray-400 cursor-not-allowed" />
+
               <input type="text" placeholder="Telefone" value={telefone} onChange={(e) => setTelefone(e.target.value)} className="p-5 rounded-2xl border border-gray-300 dark:border-[#4b382d] bg-white dark:bg-[#181411] text-[#2d1f16] dark:text-white outline-none focus:ring-2 focus:ring-[#8b5e3c] transition" />
             </div>
           </div>
@@ -161,7 +223,12 @@ export default function Checkout() {
               {['pix', 'cartao', 'boleto'].map((opcao) => (
                 <button
                   key={opcao}
-                  onClick={() => setMetodo(opcao)}
+                  onClick={() => {
+                    setMetodo(opcao)
+                    setPedidoFinalizado(false)
+                    setQrValue('')
+                    setMensagem('')
+                  }}
                   className={`px-8 py-4 rounded-2xl transition font-semibold ${
                     metodo === opcao
                       ? 'bg-[#2d1f16] text-white'
@@ -179,14 +246,26 @@ export default function Checkout() {
                   Pagamento via PIX
                 </h3>
 
-                <div className="bg-white dark:bg-[#241912] h-64 rounded-3xl mb-6 flex items-center justify-center shadow-lg">
-                  <p className="text-center text-[#2d1f16] dark:text-white font-semibold px-8">
-                    QR Code PIX demonstrativo
-                  </p>
-                </div>
+                {!pedidoFinalizado ? (
+                  <div className="bg-white dark:bg-[#241912] h-64 rounded-3xl mb-6 flex items-center justify-center shadow-lg">
+                    <p className="text-center text-[#2d1f16] dark:text-white font-semibold px-8">
+                      O QR Code PIX demonstrativo aparecerá após clicar em Finalizar Assinatura.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="bg-white dark:bg-[#241912] rounded-3xl mb-6 flex flex-col items-center justify-center shadow-lg p-8">
+                    <div className="bg-white p-4 rounded-2xl">
+                      <QRCodeCanvas value={qrValue} size={180} />
+                    </div>
+
+                    <p className="text-center text-[#4b382d] dark:text-gray-300 mt-5">
+                      Escaneie para ver a mensagem de confirmação do projeto.
+                    </p>
+                  </div>
+                )}
 
                 <p className="text-[#4b382d] dark:text-gray-300 leading-relaxed">
-                  Ao finalizar, o pedido será registrado como demonstração acadêmica.
+                  Este PIX é demonstrativo e não realiza cobrança real.
                 </p>
               </div>
             )}
@@ -206,8 +285,15 @@ export default function Checkout() {
                   Pagamento via boleto
                 </h3>
 
+                <div className="bg-white dark:bg-[#241912] p-6 rounded-2xl mb-6">
+                  <div className="h-10 bg-[#2d1f16] rounded-lg mb-4"></div>
+                  <div className="h-4 bg-gray-300 rounded mb-3"></div>
+                  <div className="h-4 bg-gray-300 rounded mb-3 w-3/4"></div>
+                  <div className="h-4 bg-gray-300 rounded w-1/2"></div>
+                </div>
+
                 <p className="text-[#4b382d] dark:text-gray-300 leading-relaxed">
-                  O boleto será gerado de forma demonstrativa após a confirmação do pedido.
+                  O boleto é demonstrativo e não gera cobrança real.
                 </p>
               </div>
             )}
@@ -231,6 +317,15 @@ export default function Checkout() {
           >
             Finalizar Assinatura
           </button>
+
+          {pedidoFinalizado && metodo === 'pix' && (
+            <button
+              onClick={() => navigate('/conta')}
+              className="w-full mt-5 border-2 border-[#2d1f16] dark:border-white text-[#2d1f16] dark:text-white py-5 rounded-2xl text-lg hover:bg-[#2d1f16] hover:text-white transition"
+            >
+              Ir para minha conta
+            </button>
+          )}
         </div>
 
         <div className="bg-white dark:bg-[#241912] rounded-[35px] shadow-2xl p-8 md:p-10 h-fit lg:sticky lg:top-28 transition duration-500">
